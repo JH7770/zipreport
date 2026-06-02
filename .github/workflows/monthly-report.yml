@@ -1,0 +1,43 @@
+name: Monthly apartment reports
+
+on:
+  schedule:
+    - cron: "0 21 1,5,10,15 * *"
+  workflow_dispatch:
+    inputs:
+      deal_ym:
+        description: "Target deal month in YYYYMM. Leave empty to use current UTC month."
+        required: false
+        type: string
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Resolve deal month
+        id: month
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.deal_ym }}" ]; then
+            echo "deal_ym=${{ inputs.deal_ym }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "deal_ym=$(date -u -d 'last month' +%Y%m)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate reports
+        env:
+          PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
+          WORDPRESS_URL: ${{ secrets.WORDPRESS_URL }}
+          WORDPRESS_USERNAME: ${{ secrets.WORDPRESS_USERNAME }}
+          WORDPRESS_APP_PASSWORD: ${{ secrets.WORDPRESS_APP_PASSWORD }}
+          DEFAULT_STATUS: draft
+        run: python scripts/run_batch.py --deal-ym "${{ steps.month.outputs.deal_ym }}" --publish
