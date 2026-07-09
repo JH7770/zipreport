@@ -1,0 +1,4 @@
+interface:
+  display_name: "WordPress Draft Writer"
+  short_description: "Draft zipreport.kr WordPress posts from local data"
+  default_prompt: "Use $draft-wordpress-post to draft a zipreport.kr WordPress article from available report data."
