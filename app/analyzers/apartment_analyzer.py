@@ -41,6 +41,22 @@ class RegionReport:
     record_high_complexes: list[ComplexStat]
 
 
+@dataclass(frozen=True)
+class RegionMarketBrief:
+    lawd_cd: str
+    region_name: str
+    deal_ym: str
+    sale_count: int
+    rent_count: int
+    jeonse_count: int
+    avg_sale_amount: int | None
+    avg_jeonse_deposit: int | None
+    jeonse_to_sale_ratio: float | None
+    sale_count_change_rate: float | None
+    sale_price_change_rate: float | None
+    jeonse_price_change_rate: float | None
+
+
 def analyze_month(conn: sqlite3.Connection, lawd_cd: str, deal_ym: str) -> RegionReport:
     prev_deal_ym = previous_month(deal_ym)
     current = _month_summary(conn, lawd_cd, deal_ym)
@@ -74,6 +90,30 @@ def analyze_month(conn: sqlite3.Connection, lawd_cd: str, deal_ym: str) -> Regio
         top_volume_complexes=top_volume,
         top_rising_complexes=top_rising,
         record_high_complexes=record_high,
+    )
+
+
+def analyze_region_market(conn: sqlite3.Connection, lawd_cd: str, deal_ym: str) -> RegionMarketBrief:
+    prev_deal_ym = previous_month(deal_ym)
+    current_sale = _month_summary(conn, lawd_cd, deal_ym)
+    previous_sale = _month_summary(conn, lawd_cd, prev_deal_ym)
+    current_rent = _rent_month_summary(conn, lawd_cd, deal_ym)
+    previous_rent = _rent_month_summary(conn, lawd_cd, prev_deal_ym)
+    region = REGIONS.get(lawd_cd, {"sido": "", "sigungu": lawd_cd})
+
+    return RegionMarketBrief(
+        lawd_cd=lawd_cd,
+        region_name=f"{region['sido']} {region['sigungu']}".strip(),
+        deal_ym=deal_ym,
+        sale_count=current_sale["count"],
+        rent_count=current_rent["rent_count"],
+        jeonse_count=current_rent["jeonse_count"],
+        avg_sale_amount=current_sale["avg"],
+        avg_jeonse_deposit=current_rent["avg_jeonse"],
+        jeonse_to_sale_ratio=_ratio_percent(current_rent["avg_jeonse"], current_sale["avg"]),
+        sale_count_change_rate=change_rate(current_sale["count"], previous_sale["count"]),
+        sale_price_change_rate=change_rate(current_sale["avg"], previous_sale["avg"]),
+        jeonse_price_change_rate=change_rate(current_rent["avg_jeonse"], previous_rent["avg_jeonse"]),
     )
 
 
@@ -149,6 +189,31 @@ def _month_summary(conn: sqlite3.Connection, lawd_cd: str, deal_ym: str) -> dict
         (lawd_cd, deal_ym),
     ).fetchone()
     return {"count": int(row["trade_count"] or 0), "avg": int(row["avg_amount"]) if row["avg_amount"] else None}
+
+
+def _rent_month_summary(conn: sqlite3.Connection, lawd_cd: str, deal_ym: str) -> dict[str, int | None]:
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS rent_count,
+            SUM(CASE WHEN COALESCE(monthly_rent, 0) = 0 THEN 1 ELSE 0 END) AS jeonse_count,
+            ROUND(AVG(CASE WHEN COALESCE(monthly_rent, 0) = 0 THEN deposit_amount END)) AS avg_jeonse
+        FROM apartment_rent
+        WHERE lawd_cd = ? AND deal_ym = ? AND deposit_amount IS NOT NULL
+        """,
+        (lawd_cd, deal_ym),
+    ).fetchone()
+    return {
+        "rent_count": int(row["rent_count"] or 0),
+        "jeonse_count": int(row["jeonse_count"] or 0),
+        "avg_jeonse": int(row["avg_jeonse"]) if row["avg_jeonse"] else None,
+    }
+
+
+def _ratio_percent(numerator: int | float | None, denominator: int | float | None) -> float | None:
+    if numerator is None or denominator in (None, 0):
+        return None
+    return round(numerator / denominator * 100, 1)
 
 
 def _complex_stats(conn: sqlite3.Connection, lawd_cd: str, deal_ym: str, prev_deal_ym: str) -> list[ComplexStat]:

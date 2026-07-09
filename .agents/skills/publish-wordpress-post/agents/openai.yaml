@@ -1,0 +1,4 @@
+interface:
+  display_name: "WordPress Post Upload"
+  short_description: "Upload Markdown reports to WordPress drafts or update posts"
+  default_prompt: "Use $publish-wordpress-post to upload a generated Markdown report to WordPress as a draft."

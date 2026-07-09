@@ -67,7 +67,8 @@ class MolitTradeCollector:
         }
         if requests is not None:
             response = requests.get(self.endpoint, params=params, timeout=self.timeout)
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(f"MOLIT API failed: HTTP {response.status_code}")
             return response.text
 
         url = f"{self.endpoint}?{urlencode(params)}"

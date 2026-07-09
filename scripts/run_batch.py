@@ -18,7 +18,10 @@ from app.generators.post_generator import (
     write_markdown,
     write_report,
 )
+from app.generators.llm_writer import LlmRewriteConfig, rewrite_markdown_with_llm
+from app.generators.report_image import create_monthly_report_image
 from app.publishers.wordpress_publisher import WordpressPublisher, extract_title
+from app.quality.content_audit import audit_markdown_file, format_audit_result
 
 
 def main() -> None:
@@ -30,6 +33,10 @@ def main() -> None:
     parser.add_argument("--status", help="WordPress post status. 기본값은 DEFAULT_STATUS")
     parser.add_argument("--category", action="append", type=int, default=[], help="WordPress category ID")
     parser.add_argument("--tag", action="append", type=int, default=[], help="WordPress tag ID")
+    parser.add_argument("--use-llm", action="store_true", help="Rewrite generated Markdown with an LLM.")
+    parser.add_argument("--featured-image", type=Path, help="Image path to upload as the WordPress featured image.")
+    parser.add_argument("--generate-image", action="store_true", help="Generate a featured image for each region.")
+    parser.add_argument("--skip-audit", action="store_true", help="Skip generated Markdown quality audit.")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -61,21 +68,35 @@ def main() -> None:
 
         report = analyze_month(conn, lawd_cd, args.deal_ym)
         persist_monthly_stats(conn, report)
-        generated.append(write_report(render_monthly_report(report), args.deal_ym, lawd_cd))
-        generated.append(
-            write_markdown(
-                render_top_rising_report(report),
-                f"{args.deal_ym}_{lawd_cd}_top_rising_report.md",
-            )
+        featured_image_path = args.featured_image
+        if args.generate_image:
+            featured_image_path = create_monthly_report_image(report, lawd_cd)
+            all_generated.append(featured_image_path)
+
+        monthly = render_monthly_report(report)
+        monthly = _maybe_rewrite(monthly, settings, args.use_llm, "monthly_region_report")
+        monthly_path = write_report(monthly, args.deal_ym, lawd_cd)
+        _audit_or_raise(monthly_path, args.skip_audit, log_path)
+        generated.append(monthly_path)
+
+        rising = render_top_rising_report(report)
+        rising = _maybe_rewrite(rising, settings, args.use_llm, "top_rising_report")
+        rising_path = write_markdown(
+            rising,
+            f"{args.deal_ym}_{lawd_cd}_top_rising_report.md",
         )
+        _audit_or_raise(rising_path, args.skip_audit, log_path)
+        generated.append(rising_path)
         if report.top_volume_complexes:
             item = report.top_volume_complexes[0]
-            generated.append(
-                write_markdown(
-                    render_apartment_detail_report(report, item),
-                    f"{args.deal_ym}_{lawd_cd}_{safe_filename(item.apartment_name)}_detail_report.md",
-                )
+            detail = render_apartment_detail_report(report, item)
+            detail = _maybe_rewrite(detail, settings, args.use_llm, "apartment_detail_report")
+            detail_path = write_markdown(
+                detail,
+                f"{args.deal_ym}_{lawd_cd}_{safe_filename(item.apartment_name)}_detail_report.md",
             )
+            _audit_or_raise(detail_path, args.skip_audit, log_path)
+            generated.append(detail_path)
         if publisher is not None:
             for path in generated:
                 result = publisher.publish_markdown_file(
@@ -83,6 +104,7 @@ def main() -> None:
                     status=args.status or settings.default_status,
                     categories=args.category,
                     tags=args.tag,
+                    featured_image_path=featured_image_path,
                 )
                 save_wordpress_post(
                     conn,
@@ -111,10 +133,34 @@ def safe_filename(value: str) -> str:
     return "".join(allowed) or "apartment"
 
 
+def _maybe_rewrite(markdown: str, settings: object, enabled: bool, report_type: str) -> str:
+    if not enabled:
+        return markdown
+    return rewrite_markdown_with_llm(
+        markdown,
+        LlmRewriteConfig(
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            base_url=settings.llm_base_url,
+        ),
+        report_type=report_type,
+    )
+
+
 def _log(path: Path, message: str) -> None:
     timestamp = datetime.now().isoformat(timespec="seconds")
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"{timestamp} {message}\n")
+
+
+def _audit_or_raise(path: Path, skip: bool, log_path: Path) -> None:
+    if skip:
+        return
+    result = audit_markdown_file(path)
+    print(format_audit_result(result))
+    _log(log_path, f"audit path={path.name} errors={len(result.errors)} warnings={len(result.warnings)}")
+    if not result.passed:
+        raise SystemExit(1)
 
 
 def _post_type_from_path(path: Path) -> str:
